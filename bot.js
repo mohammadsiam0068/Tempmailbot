@@ -1,18 +1,33 @@
-const TelegramBot = require("node-telegram-bot-api");
-const fetch = require("node-fetch");
-
-const BOT_TOKEN = process.env.BOT_TOKEN;
-const MAILTM = "https://api.mail.tm";
-
-const bot = new TelegramBot(BOT_TOKEN, { polling: true });
-
-// Store per-user session
-const sessions = {};
-
-// ─── Helpers ────────────────────────────────────────────────────────────────
+const TELEGRAM_API_URL = "https://api.telegram.org/bot";
 
 function randomString(len = 10) {
-  return Math.random().toString(36).substring(2, 2 + len);
+  const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
+  let result = "";
+  for (let i = 0; i < len; i++) {
+    result += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return result;
+}
+
+function detectOtp(text) {
+  if (!text) return null;
+  const patterns = [
+    /(?:code|otp|pin|verification code|verify)[^\d]{0,15}(\d{4,8})\b/i,
+    /\b(\d{3}[- ]?\d{3})\b/,
+    /\b(\d{4,8})\b/,
+  ];
+  for (const p of patterns) {
+    const m = text.match(p);
+    if (m && m[1]) {
+      const code = m[1].replace(/[-\s]/g, "");
+      if (code.length >= 4 && code.length <= 8) return code;
+    }
+  }
+  return null;
+}
+
+function escapeMarkdown(text) {
+  return (text || "").replace(/[_*`[\]()~>#+=|{}.!-]/g, "\\$&");
 }
 
 function stripHtml(html) {
@@ -28,15 +43,6 @@ function stripHtml(html) {
     .trim();
 }
 
-function detectOtp(text) {
-  const match = text.match(/\b(\d{4,8})\b/);
-  return match ? match[1] : null;
-}
-
-function escapeMarkdown(text) {
-  return text.replace(/[_*`[\]()\~>#+=|{}.!-]/g, "\\$&");
-}
-
 function mainKeyboard() {
   return {
     keyboard: [
@@ -49,403 +55,170 @@ function mainKeyboard() {
   };
 }
 
-async function getDomain() {
-  const res = await fetch(`${MAILTM}/domains?page=1`);
-  const data = await res.json();
-  return data["hydra:member"][0].domain;
-}
-
-async function createAccount(address, password) {
-  const res = await fetch(`${MAILTM}/accounts`, {
+async function sendTelegramMessage(token, chatId, text, options = {}) {
+  const payload = {
+    chat_id: chatId,
+    text: text,
+    ...options,
+  };
+  await fetch(`${TELEGRAM_API_URL}${token}/sendMessage`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ address, password }),
+    body: JSON.stringify(payload),
   });
-  return res.json();
 }
 
-async function getToken(address, password) {
-  const res = await fetch(`${MAILTM}/token`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ address, password }),
-  });
-  return res.json();
-}
-
-async function safeJson(res) {
-  const text = await res.text();
-  if (!text || text.trim() === "") return null;
-  try {
-    return JSON.parse(text);
-  } catch (e) {
-    return null;
+async function handleRequest(request, env) {
+  if (request.method !== "POST") {
+    return new Response("OK", { status: 200 });
   }
-}
 
-async function getMessages(token) {
-  const res = await fetch(`${MAILTM}/messages?page=1`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  return safeJson(res);
-}
+  const update = await request.json();
+  if (!update.message || !update.message.text) {
+    return new Response("OK", { status: 200 });
+  }
 
-async function getMessage(token, id) {
-  const res = await fetch(`\( {MAILTM}/messages/ \){id}`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  return safeJson(res);
-}
+  const chatId = update.message.chat.id;
+  const text = update.message.text.trim();
+  const firstName = update.message.from.first_name || "there";
 
-async function deleteAccount(token, accountId) {
-  await fetch(`\( {MAILTM}/accounts/ \){accountId}`, {
-    method: "DELETE",
-    headers: { Authorization: `Bearer ${token}` },
-  });
-}
+  const apiBase = env.TEMPMAIL_API_URL || "https://tempmail-ao8.pages.dev";
+  const domains = (env.TEMPMAIL_DOMAINS || "temporaries.email")
+    .split(",")
+    .map((d) => d.trim())
+    .filter(Boolean);
 
-// ─── /start ─────────────────────────────────────────────────────────────────
+  let session = await env.KV_SESSIONS.get(chatId.toString(), "json");
 
-bot.onText(/\/start/, async (msg) => {
-  const chatId = msg.chat.id;
-  const name = msg.from.first_name || "there";
-
-  await bot.sendMessage(
-    chatId,
-    `👋 *Welcome, ${name}!*\n\n` +
-      `📬 I'm your *Temp Mail Bot* — get disposable email addresses instantly!\n\n` +
-      `Use the buttons below:`,
-    { parse_mode: "Markdown", reply_markup: mainKeyboard() }
-  );
-});
-
-// ─── Help ───────────────────────────────────────────────────────────────────
-
-async function showHelp(chatId) {
-  await bot.sendMessage(
-    chatId,
-    `🤖 *Temp Mail Bot — Help*\n\n` +
-      `📧 New Mail — Generate a new disposable email\n` +
-      `📥 Inbox — Check received emails\n` +
-      `ℹ️ My Email — Show your current email\n` +
-      `🗑 Delete — Delete current email & session\n\n` +
-      `_Emails are temporary and will be lost on delete or restart._`,
-    { parse_mode: "Markdown", reply_markup: mainKeyboard() }
-  );
-}
-
-bot.onText(/\/help/, async (msg) => {
-  await showHelp(msg.chat.id);
-});
-
-// ─── New Mail ───────────────────────────────────────────────────────────────
-
-async function createNewMail(chatId) {
-  if (sessions[chatId]) {
-    await bot.sendMessage(
+  if (text === "/start") {
+    await sendTelegramMessage(
+      env.BOT_TOKEN,
       chatId,
-      `⚠️ You already have an active email:\n\`${sessions[chatId].email}\`\n\n` +
-        `Use Delete first to generate a new one.`,
+      `👋 *Welcome, ${escapeMarkdown(firstName)}!*\n\n📬 I'm your *Temp Mail Bot* — get disposable email addresses instantly!\n\nUse the buttons below:`,
       { parse_mode: "Markdown", reply_markup: mainKeyboard() }
     );
-    return;
-  }
-
-  await bot.sendMessage(chatId, "⏳ Generating your temp email...", {
-    reply_markup: mainKeyboard(),
-  });
-
-  try {
-    const domain = await getDomain();
-
-    let account, address, password;
-    for (let attempt = 0; attempt < 3; attempt++) {
-      const username = randomString(12);
-      address = `\( {username}@ \){domain}`;
-      password = randomString(16);
-
-      try {
-        const res = await fetch(`${MAILTM}/accounts`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ address, password }),
-        });
-        const text = await res.text();
-        if (!text) continue;
-        account = JSON.parse(text);
-        if (account.id) break;
-      } catch (e) {
-        if (attempt === 2) throw e;
-      }
-    }
-
-    if (!account || !account.id) {
-      await bot.sendMessage(
-        chatId,
-        "❌ Failed to create email after 3 attempts. Please try again.",
-        { reply_markup: mainKeyboard() }
-      );
-      return;
-    }
-
-    const tokenData = await getToken(address, password);
-
-    if (!tokenData.token) {
-      await bot.sendMessage(chatId, "❌ Failed to authenticate. Please try again.", {
-        reply_markup: mainKeyboard(),
-      });
-      return;
-    }
-
-    sessions[chatId] = {
-      email: address,
-      password,
-      token: tokenData.token,
-      accountId: account.id,
-    };
-
-    await bot.sendMessage(
+  } else if (text === "/help" || text === "❓ Help") {
+    await sendTelegramMessage(
+      env.BOT_TOKEN,
       chatId,
-      `✅ *Your Temp Email is Ready!*\n\n` +
-        `📧 \`${address}\`\n\n` +
-        `👆 Tap to copy!`,
+      `🤖 *Temp Mail Bot — Help*\n\n📧 New Mail — Generate a new disposable email\n📥 Inbox — Check received emails\nℹ️ My Email — Show your current email\n🗑 Delete — Delete current email session\n\n_Reply with a number to read that email._`,
       { parse_mode: "Markdown", reply_markup: mainKeyboard() }
     );
-  } catch (err) {
-    console.error(err);
-    await bot.sendMessage(chatId, "❌ Something went wrong. Please try again.", {
-      reply_markup: mainKeyboard(),
-    });
-  }
-}
-
-bot.onText(/\/newmail/, async (msg) => {
-  await createNewMail(msg.chat.id);
-});
-
-// ─── My Email ───────────────────────────────────────────────────────────────
-
-async function showMyEmail(chatId) {
-  if (!sessions[chatId]) {
-    await bot.sendMessage(chatId, "❌ No active email. Create one first.", {
-      reply_markup: mainKeyboard(),
-    });
-    return;
-  }
-
-  await bot.sendMessage(
-    chatId,
-    `📧 *Your current email:*\n\`${sessions[chatId].email}\``,
-    { parse_mode: "Markdown", reply_markup: mainKeyboard() }
-  );
-}
-
-bot.onText(/\/myemail/, async (msg) => {
-  await showMyEmail(msg.chat.id);
-});
-
-// ─── Inbox ──────────────────────────────────────────────────────────────────
-
-async function showInbox(chatId) {
-  if (!sessions[chatId]) {
-    await bot.sendMessage(chatId, "❌ No active email. Create one first.", {
-      reply_markup: mainKeyboard(),
-    });
-    return;
-  }
-
-  await bot.sendMessage(chatId, "🔄 Checking your inbox...", {
-    reply_markup: mainKeyboard(),
-  });
-
-  try {
-    const data = await getMessages(sessions[chatId].token);
-
-    if (!data || !data["hydra:member"]) {
-      await bot.sendMessage(
+  } else if (text === "/newmail" || text === "📧 New Mail") {
+    const domain = domains[Math.floor(Math.random() * domains.length)];
+    const email = `${randomString(10)}@${domain}`;
+    session = { email, messages: [] };
+    await env.KV_SESSIONS.put(chatId.toString(), JSON.stringify(session));
+    await sendTelegramMessage(
+      env.BOT_TOKEN,
+      chatId,
+      `✅ *Your Temp Email is Ready!*\n\n📧 \`${email}\`\n\n👆 Tap to copy!`,
+      { parse_mode: "Markdown", reply_markup: mainKeyboard() }
+    );
+  } else if (text === "/myemail" || text === "ℹ️ My Email") {
+    if (!session) {
+      await sendTelegramMessage(env.BOT_TOKEN, chatId, "❌ No active email. Create one first.", { reply_markup: mainKeyboard() });
+    } else {
+      await sendTelegramMessage(
+        env.BOT_TOKEN,
         chatId,
-        "⚠️ Could not reach mail server. Please try again in a moment.",
-        { reply_markup: mainKeyboard() }
-      );
-      return;
-    }
-
-    const messages = data["hydra:member"];
-
-    if (!messages || messages.length === 0) {
-      await bot.sendMessage(
-        chatId,
-        `📭 *Inbox is empty.*\n\nNo emails received yet for:\n\`${sessions[chatId].email}\``,
+        `📧 *Your current email:*\n\`${session.email}\``,
         { parse_mode: "Markdown", reply_markup: mainKeyboard() }
       );
-      return;
     }
-
-    sessions[chatId].messages = messages;
-
-    let text =
-      `📬 *You have ${messages.length} email(s):*\n\n` +
-      messages
-        .map(
-          (m, i) =>
-            `*\( {i + 1}.* 📩 From: \` \){m.from.address}\`\n` +
-            `    📌 Subject: ${escapeMarkdown(m.subject || "(No subject)")}\n` +
-            `    🕐 ${new Date(m.createdAt).toLocaleString("en-IN", {
-              timeZone: "Asia/Kolkata",
-            })}`
-        )
-        .join("\n\n") +
-      `\n\nReply with the number (1, 2, 3...) to read a message`;
-
-    await bot.sendMessage(chatId, text, {
-      parse_mode: "Markdown",
-      reply_markup: mainKeyboard(),
-    });
-  } catch (err) {
-    console.error(err);
-    await bot.sendMessage(chatId, "❌ Failed to fetch inbox. Try again.", {
-      reply_markup: mainKeyboard(),
-    });
-  }
-}
-
-bot.onText(/\/inbox/, async (msg) => {
-  await showInbox(msg.chat.id);
-});
-
-// ─── Read ───────────────────────────────────────────────────────────────────
-
-bot.onText(/\/read_(\d+)/, async (msg, match) => {
-  const chatId = msg.chat.id;
-  const index = parseInt(match[1]) - 1;
-  await readEmail(chatId, index);
-});
-
-async function readEmail(chatId, index) {
-  if (!sessions[chatId]) {
-    await bot.sendMessage(chatId, "❌ No active session. Create one first.", {
-      reply_markup: mainKeyboard(),
-    });
-    return;
-  }
-
-  if (!sessions[chatId].messages || !sessions[chatId].messages[index]) {
-    await bot.sendMessage(chatId, "❌ Invalid message number.", {
-      reply_markup: mainKeyboard(),
-    });
-    return;
-  }
-
-  try {
-    const msgId = sessions[chatId].messages[index].id;
-    const full = await getMessage(sessions[chatId].token, msgId);
-
-    if (!full) {
-      await bot.sendMessage(chatId, "⚠️ Could not fetch email.", {
-        reply_markup: mainKeyboard(),
-      });
-      return;
-    }
-
-    let rawBody = "";
-    if (full.text) {
-      rawBody = full.text.substring(0, 4000);
-    } else if (full.html) {
-      const htmlStr = Array.isArray(full.html)
-        ? full.html.map((h) => (typeof h === "string" ? h : h.value || "")).join(" ")
-        : typeof full.html === "string"
-        ? full.html
-        : "";
-      rawBody = stripHtml(htmlStr).substring(0, 4000);
+  } else if (text === "/inbox" || text === "📥 Inbox") {
+    if (!session) {
+      await sendTelegramMessage(env.BOT_TOKEN, chatId, "❌ No active email. Create one first.", { reply_markup: mainKeyboard() });
     } else {
-      rawBody = "(Empty message)";
+      await sendTelegramMessage(env.BOT_TOKEN, chatId, "🔄 Checking your inbox...", { reply_markup: mainKeyboard() });
+      try {
+        const res = await fetch(`${apiBase}/api/messages?email=${encodeURIComponent(session.email)}`);
+        const messages = res.ok ? await res.json() : [];
+        if (!messages || messages.length === 0) {
+          await sendTelegramMessage(
+            env.BOT_TOKEN,
+            chatId,
+            `📭 *Inbox is empty.*\n\nNo emails received yet for:\n\`${session.email}\``,
+            { parse_mode: "Markdown", reply_markup: mainKeyboard() }
+          );
+        } else {
+          session.messages = messages;
+          await env.KV_SESSIONS.put(chatId.toString(), JSON.stringify(session));
+          const inboxText =
+            `📬 *You have ${messages.length} email(s):*\n\n` +
+            messages
+              .map(
+                (m, i) =>
+                  `*${i + 1}.* 📩 From: \`${escapeMarkdown(m.from_address)}\`\n    📌 Subject: ${escapeMarkdown(m.subject || "(No subject)")}\n    🕐 ${new Date(m.received_at.replace(" ", "T") + "Z").toLocaleString("en-BD", { timeZone: "Asia/Dhaka" })}`
+              )
+              .join("\n\n") +
+            `\n\nReply with the number (1, 2, 3...) to read a message`;
+          await sendTelegramMessage(env.BOT_TOKEN, chatId, inboxText, { parse_mode: "Markdown", reply_markup: mainKeyboard() });
+        }
+      } catch (err) {
+        await sendTelegramMessage(env.BOT_TOKEN, chatId, "❌ Error checking inbox.", { reply_markup: mainKeyboard() });
+      }
     }
-
-    const otp = detectOtp(rawBody);
-    const otpLine = otp ? `\n🔐 OTP Detected: \`${otp}\`\n` : "";
-    const safeSubject = escapeMarkdown(full.subject || "(No subject)");
-
-    await bot.sendMessage(
-      chatId,
-      `📩 *Email #${index + 1}*\n\n` +
-        `*From:* \`${full.from.address}\`\n` +
-        `*Subject:* ${safeSubject}\n` +
-        `*Date:* ${new Date(full.createdAt).toLocaleString("en-IN", {
-          timeZone: "Asia/Kolkata",
-        })}` +
-        otpLine,
-      { parse_mode: "Markdown" }
-    );
-
-    await bot.sendMessage(chatId, `─────────────────\n${rawBody}`, {
-      disable_web_page_preview: true,
-      reply_markup: mainKeyboard(),
-    });
-  } catch (err) {
-    console.error(err);
-    await bot.sendMessage(chatId, "❌ Failed to read message.", {
-      reply_markup: mainKeyboard(),
-    });
-  }
-}
-
-// ─── Delete ─────────────────────────────────────────────────────────────────
-
-async function deleteMail(chatId) {
-  if (!sessions[chatId]) {
-    await bot.sendMessage(chatId, "❌ No active email to delete.", {
-      reply_markup: mainKeyboard(),
-    });
-    return;
-  }
-
-  try {
-    await deleteAccount(sessions[chatId].token, sessions[chatId].accountId);
-    delete sessions[chatId];
-
-    await bot.sendMessage(
-      chatId,
-      `🗑 *Email deleted successfully!*\n\nUse New Mail to generate a fresh one.`,
-      { parse_mode: "Markdown", reply_markup: mainKeyboard() }
-    );
-  } catch (err) {
-    delete sessions[chatId];
-    await bot.sendMessage(chatId, "🗑 Session cleared.", {
-      reply_markup: mainKeyboard(),
-    });
-  }
-}
-
-bot.onText(/\/delete/, async (msg) => {
-  await deleteMail(msg.chat.id);
-});
-
-// ─── Button text handlers ───────────────────────────────────────────────────
-
-bot.on("message", async (msg) => {
-  if (!msg.text || msg.text.startsWith("/")) return;
-
-  const chatId = msg.chat.id;
-  const text = msg.text.trim();
-
-  if (text === "📧 New Mail" || text === "New Mail") {
-    await createNewMail(chatId);
-  } else if (text === "📥 Inbox" || text === "Inbox") {
-    await showInbox(chatId);
-  } else if (text === "ℹ️ My Email" || text === "My Email") {
-    await showMyEmail(chatId);
-  } else if (text === "🗑 Delete" || text === "Delete") {
-    await deleteMail(chatId);
-  } else if (text === "❓ Help" || text === "Help") {
-    await showHelp(chatId);
+  } else if (text === "/delete" || text === "🗑 Delete") {
+    if (!session) {
+      await sendTelegramMessage(env.BOT_TOKEN, chatId, "❌ No active email to delete.", { reply_markup: mainKeyboard() });
+    } else {
+      try {
+        await fetch(`${apiBase}/api/messages?email=${encodeURIComponent(session.email)}`, { method: "DELETE" });
+      } catch (err) {}
+      await env.KV_SESSIONS.delete(chatId.toString());
+      await sendTelegramMessage(
+        env.BOT_TOKEN,
+        chatId,
+        `🗑 *Email deleted successfully!*\n\nUse New Mail to generate a fresh one.`,
+        { parse_mode: "Markdown", reply_markup: mainKeyboard() }
+      );
+    }
   } else if (/^\d+$/.test(text)) {
-    await readEmail(chatId, parseInt(text) - 1);
-  } else {
-    await bot.sendMessage(chatId, "💡 Use the buttons below.", {
-      reply_markup: mainKeyboard(),
-    });
-  }
-});
+    const index = parseInt(text) - 1;
+    if (!session) {
+      await sendTelegramMessage(env.BOT_TOKEN, chatId, "❌ No active session. Create one first.", { reply_markup: mainKeyboard() });
+    } else if (!session.messages || !session.messages[index]) {
+      await sendTelegramMessage(env.BOT_TOKEN, chatId, "❌ Invalid message number.", { reply_markup: mainKeyboard() });
+    } else {
+      const msgId = session.messages[index].id;
+      try {
+        const res = await fetch(`${apiBase}/api/messages/${msgId}?email=${encodeURIComponent(session.email)}`);
+        const full = res.ok ? await res.json() : null;
+        if (!full) {
+          await sendTelegramMessage(env.BOT_TOKEN, chatId, "⚠️ Could not fetch email.", { reply_markup: mainKeyboard() });
+        } else {
+          let rawBody = "";
+          if (full.text_content) rawBody = full.text_content.substring(0, 4000);
+          else if (full.html_content) rawBody = stripHtml(full.html_content).substring(0, 4000);
+          else if (full.preview) rawBody = full.preview;
+          else rawBody = "(Empty message)";
 
-console.log("🤖 Temp Mail Bot is running...");
-module.exports = bot;
+          const otp = detectOtp(`${full.subject || ""}\n${rawBody}`);
+          const otpLine = otp ? `\n🔐 OTP Detected: \`${otp}\`\n` : "";
+          const safeSubject = escapeMarkdown(full.subject || "(No subject)");
+
+          await sendTelegramMessage(
+            env.BOT_TOKEN,
+            chatId,
+            `📩 *Email #${index + 1}*\n\n*From:* \`${full.from_address}\`\n*Subject:* ${safeSubject}\n*Date:* ${new Date(full.received_at.replace(" ", "T") + "Z").toLocaleString("en-BD", { timeZone: "Asia/Dhaka" })}${otpLine}`,
+            { parse_mode: "Markdown" }
+          );
+          await sendTelegramMessage(env.BOT_TOKEN, chatId, `─────────────────\n${rawBody}`, { disable_web_page_preview: true, reply_markup: mainKeyboard() });
+        }
+      } catch (err) {
+        await sendTelegramMessage(env.BOT_TOKEN, chatId, "⚠️ Error fetching email.", { reply_markup: mainKeyboard() });
+      }
+    }
+  } else {
+    await sendTelegramMessage(env.BOT_TOKEN, chatId, "💡 Use the buttons below.", { reply_markup: mainKeyboard() });
+  }
+
+  return new Response("OK", { status: 200 });
+}
+
+export default {
+  async fetch(request, env) {
+    return handleRequest(request, env);
+  },
+};
