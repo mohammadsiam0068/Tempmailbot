@@ -1,7 +1,12 @@
-name = "tempmail-bot"
-main = "api/webhook.js"
-compatibility_date = "2024-01-01"
-
-[[kv_namespaces]]
-binding = "KV_SESSIONS"
-id = "fcc7ab5d42e748f89bf3fb9cccb1a39b"
+{
+  "name": "tempmail-bot",
+  "version": "1.0.0",
+  "description": "Telegram Bot for Cloudflare Workers",
+  "main": "api/webhook.js",
+  "scripts": {
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "^3.0.0"
+  }
+}
