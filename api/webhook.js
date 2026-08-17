@@ -217,7 +217,6 @@ async function handleRequest(request, env) {
       await sendTelegramMessage(env.BOT_TOKEN, chatId, "💡 Use the buttons below.", { reply_markup: mainKeyboard() });
     }
   } catch (err) {
-    console.error(err);
   }
 
   return new Response("OK", { status: 200 });
