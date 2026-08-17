@@ -26,8 +26,8 @@ function detectOtp(text) {
   return null;
 }
 
-function escapeMarkdown(text) {
-  return (text || "").replace(/[_*`[\]()~>#+=|{}.!-]/g, "\\$&");
+function escapeHtml(text) {
+  return (text || "").toString().replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
 function stripHtml(html) {
@@ -83,10 +83,17 @@ async function handleRequest(request, env) {
   const firstName = update.message.from.first_name || "there";
 
   const apiBase = env.TEMPMAIL_API_URL || "https://tempmail-ao8.pages.dev";
-  const domains = (env.TEMPMAIL_DOMAINS || "temporaries.email")
-    .split(",")
-    .map((d) => d.trim())
-    .filter(Boolean);
+  const domains = [
+    "echoinbox.eu.cc",
+    "echomail.eu.cc",
+    "echotemp.eu.cc",
+    "mailecho.eu.cc",
+    "mailr.eu.cc",
+    "mailrly.eu.cc",
+    "multisms.eu.cc",
+    "tapmail.eu.cc",
+    "telegramtg.eu.cc"
+  ];
 
   let session = await env.KV_SESSIONS.get(chatId.toString(), "json");
 
@@ -94,15 +101,15 @@ async function handleRequest(request, env) {
     await sendTelegramMessage(
       env.BOT_TOKEN,
       chatId,
-      `👋 *Welcome, ${escapeMarkdown(firstName)}!*\n\n📬 I'm your *Temp Mail Bot* — get disposable email addresses instantly!\n\nUse the buttons below:`,
-      { parse_mode: "Markdown", reply_markup: mainKeyboard() }
+      `👋 <b>Welcome, ${escapeHtml(firstName)}!</b>\n\n📬 I'm your <b>Temp Mail Bot</b> — get disposable email addresses instantly!\n\nUse the buttons below:`,
+      { parse_mode: "HTML", reply_markup: mainKeyboard() }
     );
   } else if (text === "/help" || text === "❓ Help") {
     await sendTelegramMessage(
       env.BOT_TOKEN,
       chatId,
-      `🤖 *Temp Mail Bot — Help*\n\n📧 New Mail — Generate a new disposable email\n📥 Inbox — Check received emails\nℹ️ My Email — Show your current email\n🗑 Delete — Delete current email session\n\n_Reply with a number to read that email._`,
-      { parse_mode: "Markdown", reply_markup: mainKeyboard() }
+      `🤖 <b>Temp Mail Bot — Help</b>\n\n📧 New Mail — Generate a new disposable email\n📥 Inbox — Check received emails\nℹ️ My Email — Show your current email\n🗑 Delete — Delete current email session\n\n<i>Reply with a number to read that email.</i>`,
+      { parse_mode: "HTML", reply_markup: mainKeyboard() }
     );
   } else if (text === "/newmail" || text === "📧 New Mail") {
     const domain = domains[Math.floor(Math.random() * domains.length)];
@@ -112,8 +119,8 @@ async function handleRequest(request, env) {
     await sendTelegramMessage(
       env.BOT_TOKEN,
       chatId,
-      `✅ *Your Temp Email is Ready!*\n\n📧 \`${email}\`\n\n👆 Tap to copy!`,
-      { parse_mode: "Markdown", reply_markup: mainKeyboard() }
+      `✅ <b>Your Temp Email is Ready!</b>\n\n📧 <code>${email}</code>\n\n👆 Tap to copy!`,
+      { parse_mode: "HTML", reply_markup: mainKeyboard() }
     );
   } else if (text === "/myemail" || text === "ℹ️ My Email") {
     if (!session) {
@@ -122,8 +129,8 @@ async function handleRequest(request, env) {
       await sendTelegramMessage(
         env.BOT_TOKEN,
         chatId,
-        `📧 *Your current email:*\n\`${session.email}\``,
-        { parse_mode: "Markdown", reply_markup: mainKeyboard() }
+        `📧 <b>Your current email:</b>\n<code>${session.email}</code>`,
+        { parse_mode: "HTML", reply_markup: mainKeyboard() }
       );
     }
   } else if (text === "/inbox" || text === "📥 Inbox") {
@@ -138,22 +145,22 @@ async function handleRequest(request, env) {
           await sendTelegramMessage(
             env.BOT_TOKEN,
             chatId,
-            `📭 *Inbox is empty.*\n\nNo emails received yet for:\n\`${session.email}\``,
-            { parse_mode: "Markdown", reply_markup: mainKeyboard() }
+            `📭 <b>Inbox is empty.</b>\n\nNo emails received yet for:\n<code>${session.email}</code>`,
+            { parse_mode: "HTML", reply_markup: mainKeyboard() }
           );
         } else {
           session.messages = messages;
           await env.KV_SESSIONS.put(chatId.toString(), JSON.stringify(session));
           const inboxText =
-            `📬 *You have ${messages.length} email(s):*\n\n` +
+            `📬 <b>You have ${messages.length} email(s):</b>\n\n` +
             messages
               .map(
                 (m, i) =>
-                  `*${i + 1}.* 📩 From: \`${escapeMarkdown(m.from_address)}\`\n    📌 Subject: ${escapeMarkdown(m.subject || "(No subject)")}\n    🕐 ${new Date(m.received_at.replace(" ", "T") + "Z").toLocaleString("en-BD", { timeZone: "Asia/Dhaka" })}`
+                  `<b>${i + 1}.</b> 📩 From: <code>${escapeHtml(m.from_address)}</code>\n    📌 Subject: ${escapeHtml(m.subject || "(No subject)")}\n    🕐 ${new Date(m.received_at.replace(" ", "T") + "Z").toLocaleString("en-BD", { timeZone: "Asia/Dhaka" })}`
               )
               .join("\n\n") +
             `\n\nReply with the number (1, 2, 3...) to read a message`;
-          await sendTelegramMessage(env.BOT_TOKEN, chatId, inboxText, { parse_mode: "Markdown", reply_markup: mainKeyboard() });
+          await sendTelegramMessage(env.BOT_TOKEN, chatId, inboxText, { parse_mode: "HTML", reply_markup: mainKeyboard() });
         }
       } catch (err) {
         await sendTelegramMessage(env.BOT_TOKEN, chatId, "❌ Error checking inbox.", { reply_markup: mainKeyboard() });
@@ -170,8 +177,8 @@ async function handleRequest(request, env) {
       await sendTelegramMessage(
         env.BOT_TOKEN,
         chatId,
-        `🗑 *Email deleted successfully!*\n\nUse New Mail to generate a fresh one.`,
-        { parse_mode: "Markdown", reply_markup: mainKeyboard() }
+        `🗑 <b>Email deleted successfully!</b>\n\nUse New Mail to generate a fresh one.`,
+        { parse_mode: "HTML", reply_markup: mainKeyboard() }
       );
     }
   } else if (/^\d+$/.test(text)) {
@@ -195,14 +202,14 @@ async function handleRequest(request, env) {
           else rawBody = "(Empty message)";
 
           const otp = detectOtp(`${full.subject || ""}\n${rawBody}`);
-          const otpLine = otp ? `\n🔐 OTP Detected: \`${otp}\`\n` : "";
-          const safeSubject = escapeMarkdown(full.subject || "(No subject)");
+          const otpLine = otp ? `\n🔐 OTP Detected: <code>${otp}</code>\n` : "";
+          const safeSubject = escapeHtml(full.subject || "(No subject)");
 
           await sendTelegramMessage(
             env.BOT_TOKEN,
             chatId,
-            `📩 *Email #${index + 1}*\n\n*From:* \`${full.from_address}\`\n*Subject:* ${safeSubject}\n*Date:* ${new Date(full.received_at.replace(" ", "T") + "Z").toLocaleString("en-BD", { timeZone: "Asia/Dhaka" })}${otpLine}`,
-            { parse_mode: "Markdown" }
+            `📩 <b>Email #${index + 1}</b>\n\n<b>From:</b> <code>${escapeHtml(full.from_address)}</code>\n<b>Subject:</b> ${safeSubject}\n<b>Date:</b> ${new Date(full.received_at.replace(" ", "T") + "Z").toLocaleString("en-BD", { timeZone: "Asia/Dhaka" })}${otpLine}`,
+            { parse_mode: "HTML" }
           );
           await sendTelegramMessage(env.BOT_TOKEN, chatId, `─────────────────\n${rawBody}`, { disable_web_page_preview: true, reply_markup: mainKeyboard() });
         }
