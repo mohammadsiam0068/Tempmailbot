@@ -84,7 +84,9 @@ async function handleRequest(request, env) {
     const firstName = update.message.from.first_name || "there";
 
     const apiBase = env.TEMPMAIL_API_URL || "https://tempmail-ao8.pages.dev";
-    const domains = (env.TEMPMAIL_DOMAINS || "echoinbox.eu.cc","echomail.eu.cc","echotemp.eu.cc","mailecho.eu.cc","mailr.eu.cc",'mailrly.eu.cc","multisms.eu.cc","tapmail.eu.cc","telegramtg.eu.cc")
+    
+    const defaultDomains = "echoinbox.eu.cc,echomail.eu.cc,echotemp.eu.cc,mailecho.eu.cc,mailr.eu.cc,mailrly.eu.cc,multisms.eu.cc,tapmail.eu.cc,telegramtg.eu.cc";
+    const domains = (env.TEMPMAIL_DOMAINS || defaultDomains)
       .split(",")
       .map((d) => d.trim())
       .filter(Boolean);
