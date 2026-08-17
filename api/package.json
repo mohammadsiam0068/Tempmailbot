@@ -1,7 +1,12 @@
 {
-  "name": "tempmail-telegram-bot",
+  "name": "tempmail-bot",
   "version": "1.0.0",
-  "dependencies": {
-    "node-telegram-bot-api": "^0.66.0"
+  "description": "Telegram Bot for Cloudflare Workers",
+  "main": "api/webhook.js",
+  "scripts": {
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "^3.0.0"
   }
 }
