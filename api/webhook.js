@@ -133,27 +133,47 @@ async function handleRequest(request, env) {
       return new Response("OK", { status: 200 });
     }
 
+    // Force Sub Check
     let unjoinedChats = [];
     for (const chat of REQUIRED_CHATS) {
       const isMember = await checkMembership(env.BOT_TOKEN, userId, chat.id);
       if (!isMember) unjoinedChats.push(chat);
     }
 
-    if (unjoinedChats.length > 0) {
-      if (isCallback) {
+    // জয়েন ভেরিফিকেশন কলব্যাক হ্যান্ডলিং
+    if (isCallback && callbackData === "check_joined") {
+      if (unjoinedChats.length === 0) {
         await fetch(`${TELEGRAM_API_URL}${env.BOT_TOKEN}/answerCallbackQuery`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ callback_query_id: update.callback_query.id, text: "আপনাকে চ্যানেলগুলোতে জয়েন করতে হবে!", show_alert: true })
+          body: JSON.stringify({ callback_query_id: update.callback_query.id, text: "ধন্যবাদ! আপনার ভেরিফিকেশন সফল হয়েছে।" })
         });
+        await sendTelegramMessage(
+          env.BOT_TOKEN,
+          chatId,
+          `🎉 <b>স্বাগতম ${escapeHtml(firstName)}!</b>\n\nআপনি সফলভাবে চ্যানেলগুলোতে জয়েন করেছেন। এখন আপনি বটটি আনলিমিটেড ব্যবহার করতে পারবেন!\n\nনিচের বাটনগুলো ব্যবহার করুন:`,
+          { parse_mode: "HTML", reply_markup: mainKeyboard() }
+        );
+        return new Response("OK", { status: 200 });
+      } else {
+        await fetch(`${TELEGRAM_API_URL}${env.BOT_TOKEN}/answerCallbackQuery`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ callback_query_id: update.callback_query.id, text: "❌ আপনি এখনো সবগুলো চ্যানেলে জয়েন করেননি!", show_alert: true })
+        });
+        return new Response("OK", { status: 200 });
       }
-      
+    }
+
+    // যদি জয়েন না করা থাকে
+    if (unjoinedChats.length > 0) {
       let inlineKeyboard = unjoinedChats.map(chat => [{ text: `➕ Join ${chat.id}`, url: chat.url }]);
+      inlineKeyboard.push([{ text: "✅ I Have Joined (ভেরিফাই করুন)", callback_data: "check_joined" }]);
       
       await sendTelegramMessage(
         env.BOT_TOKEN,
         chatId,
-        `⚠️ <b>দুঃখিত, বটটি ব্যবহার করতে হলে আপনাকে নিচের চ্যানেলগুলোতে জয়েন করতে হবে!</b>\n\nজয়েন করার পর আবার /start দিন।`,
+        `⚠️ <b>দুঃখিত, বটটি ব্যবহার করতে হলে আপনাকে নিচের চ্যানেলগুলোতে জয়েন করতে হবে!</b>\n\nচ্যানেলগুলোতে জয়েন করার পর নিচের <b>"I Have Joined"</b> বাটনে ক্লিক করুন।`,
         {
           parse_mode: "HTML",
           reply_markup: { inline_keyboard: inlineKeyboard }
@@ -172,6 +192,7 @@ async function handleRequest(request, env) {
       session.history.unshift(session.email);
     }
 
+    // মেইল সুইচ কলব্যাক
     if (isCallback) {
       await fetch(`${TELEGRAM_API_URL}${env.BOT_TOKEN}/answerCallbackQuery`, {
         method: "POST",
@@ -234,7 +255,6 @@ async function handleRequest(request, env) {
       session.history.unshift(email);
       session.history = [...new Set(session.history)].slice(0, 20);
       
-      // সেশনের সাথে সাথে ইমেইলটি কার, তা ডাটাবেসে সেভ রাখা হলো অটো ডিটেক্টের জন্য
       await env.KV_SESSIONS.put("map_" + email, chatId.toString());
       await env.KV_SESSIONS.put(chatId.toString(), JSON.stringify(session));
       
@@ -317,7 +337,7 @@ async function handleRequest(request, env) {
           await fetch(`${apiBase}/api/messages?email=${encodeURIComponent(session.email)}`, { method: "DELETE" });
         } catch (err) {}
         
-        await env.KV_SESSIONS.delete("map_" + session.email); // ম্যাপ ডিলিট
+        await env.KV_SESSIONS.delete("map_" + session.email);
         session.history = session.history.filter(e => e !== session.email);
         session.email = session.history.length > 0 ? session.history[0] : null;
         session.messages = [];
@@ -370,7 +390,6 @@ async function handleRequest(request, env) {
       await sendTelegramMessage(env.BOT_TOKEN, chatId, "💡 Use the buttons below.", { reply_markup: mainKeyboard() });
     }
   } catch (err) {
-    // Error silently handled
   }
 
   return new Response("OK", { status: 200 });
