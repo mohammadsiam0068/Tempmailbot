@@ -1,11 +1,10 @@
 const TELEGRAM_API_URL = "https://api.telegram.org/bot";
 
-// --- কনফিগারেশন ---
-const REQUIRED_CHAT = "@premiumify19","premiumify20"; // আপনার গ্রুপের ইউজারনেম দিন (যেমন: @EchoMailGroup)
-const JOIN_LINK = "https://t.me/premiumify19","https://t.me/premiumify20"; // আপনার গ্রুপের লিংক দিন
+const REQUIRED_CHATS = [
+  { id: "@premiumify19", url: "https://t.me/premiumify19" },
+  { id: "@premiumify20", url: "https://t.me/premiumify20" }
+];
 const FRONTEND_URL = "https://echomail.eu.cc/";
-
-// আপনার অ্যাডমিন আইডি এখানে সেট করা হলো
 const ADMIN_IDS = ["7880714253"];
 
 function randomString(len = 10) {
@@ -17,7 +16,6 @@ function randomString(len = 10) {
   return result;
 }
 
-// OTP ডিটেক্ট করার ফাংশন
 function detectOtp(text) {
   if (!text) return null;
   const patterns = [
@@ -102,7 +100,6 @@ async function handleRequest(request, env) {
     let isCallback = false;
     let callbackData = "";
 
-    // ইনপুট ভ্যালিডেশন
     if (update.message && update.message.text) {
       chatId = update.message.chat.id;
       userId = update.message.from.id.toString();
@@ -118,24 +115,31 @@ async function handleRequest(request, env) {
       return new Response("OK", { status: 200 });
     }
 
-    // Force Sub (গ্রুপ জয়েন চেক)
-    const isMember = await checkMembership(env.BOT_TOKEN, userId, REQUIRED_CHAT);
-    if (!isMember) {
+    let unjoinedChats = [];
+    for (const chat of REQUIRED_CHATS) {
+      const isMember = await checkMembership(env.BOT_TOKEN, userId, chat.id);
+      if (!isMember) unjoinedChats.push(chat);
+    }
+
+    if (unjoinedChats.length > 0) {
       if (isCallback) {
         await fetch(`${TELEGRAM_API_URL}${env.BOT_TOKEN}/answerCallbackQuery`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ callback_query_id: update.callback_query.id, text: "আপনাকে আগে গ্রুপে জয়েন করতে হবে!", show_alert: true })
+          body: JSON.stringify({ callback_query_id: update.callback_query.id, text: "আপনাকে চ্যানেলগুলোতে জয়েন করতে হবে!", show_alert: true })
         });
       }
+      
+      let inlineKeyboard = unjoinedChats.map(chat => [{ text: `➕ Join ${chat.id}`, url: chat.url }]);
+      
       await sendTelegramMessage(
         env.BOT_TOKEN,
         chatId,
-        `⚠️ <b>দুঃখিত, বটটি ব্যবহার করতে হলে আপনাকে আমাদের গ্রুপে জয়েন করতে হবে!</b>\n\nনিচের বাটনে ক্লিক করে গ্রুপে জয়েন করুন এবং আবার /start দিন।`,
+        `⚠️ <b>দুঃখিত, বটটি ব্যবহার করতে হলে আপনাকে নিচের চ্যানেলগুলোতে জয়েন করতে হবে!</b>\n\nজয়েন করার পর আবার /start দিন।`,
         {
           parse_mode: "HTML",
           reply_markup: {
-            inline_keyboard: [[{ text: "➕ Join Our Group", url: JOIN_LINK }]],
+            inline_keyboard: inlineKeyboard,
           },
         }
       );
@@ -146,14 +150,12 @@ async function handleRequest(request, env) {
     const defaultDomains = "echoinbox.eu.cc,echomail.eu.cc,echotemp.eu.cc,mailecho.eu.cc,mailr.eu.cc,mailrly.eu.cc,multisms.eu.cc,tapmail.eu.cc,telegramtg.eu.cc";
     const domains = (env.TEMPMAIL_DOMAINS || defaultDomains).split(",").map((d) => d.trim()).filter(Boolean);
 
-    // সেশন এবং মেইল হিস্ট্রি সেটআপ
     let session = await env.KV_SESSIONS.get(chatId.toString(), "json") || { email: null, messages: [], history: [] };
     if (!session.history) session.history = [];
     if (session.email && !session.history.includes(session.email)) {
       session.history.unshift(session.email);
     }
 
-    // ইনলাইন বাটন (Callback) হ্যান্ডেল
     if (isCallback) {
       await fetch(`${TELEGRAM_API_URL}${env.BOT_TOKEN}/answerCallbackQuery`, {
         method: "POST",
@@ -165,7 +167,7 @@ async function handleRequest(request, env) {
         const index = parseInt(callbackData.split("_")[1]);
         if (session.history[index]) {
           session.email = session.history[index];
-          session.messages = []; // ইনবক্স রিফ্রেশ করার জন্য
+          session.messages = [];
           await env.KV_SESSIONS.put(chatId.toString(), JSON.stringify(session));
           
           const encodedEmail = btoa(session.email);
@@ -182,7 +184,6 @@ async function handleRequest(request, env) {
       return new Response("OK", { status: 200 });
     }
 
-    // কমান্ড হ্যান্ডেল
     if (text === "/start") {
       await sendTelegramMessage(
         env.BOT_TOKEN,
@@ -190,10 +191,7 @@ async function handleRequest(request, env) {
         `👋 <b>Welcome, ${escapeHtml(firstName)}!</b>\n\n📬 I'm your <b>Temp Mail Bot</b> — get disposable email addresses instantly!\n\nUse the buttons below:`,
         { parse_mode: "HTML", reply_markup: mainKeyboard() }
       );
-    } 
-    
-    // Admin প্যানেল চেক
-    else if (text === "/admin" || text === "⚙️ Admin") {
+    } else if (text === "/admin" || text === "⚙️ Admin") {
       if (!ADMIN_IDS.includes(userId)) {
         await sendTelegramMessage(env.BOT_TOKEN, chatId, "❌ <b>অ্যাক্সেস ডিনাইড!</b>\nআপনার এই কমান্ডটি ব্যবহার করার অনুমতি নেই।", { parse_mode: "HTML", reply_markup: mainKeyboard() });
       } else {
@@ -204,29 +202,24 @@ async function handleRequest(request, env) {
           { parse_mode: "HTML", reply_markup: mainKeyboard() }
         );
       }
-    } 
-    
-    else if (text === "/help" || text === "❓ Help") {
+    } else if (text === "/help" || text === "❓ Help") {
       await sendTelegramMessage(
         env.BOT_TOKEN,
         chatId,
         `🤖 <b>Temp Mail Bot — Help</b>\n\n📧 New Mail — Generate a new email\n📜 Mail List — View last 20 emails\n📥 Inbox — Check received emails\nℹ️ My Email — Show current email\n🗑 Delete — Delete current email\n\n<i>Reply with a number to read that email.</i>`,
         { parse_mode: "HTML", reply_markup: mainKeyboard() }
       );
-    } 
-    
-    else if (text === "/newmail" || text === "📧 New Mail") {
+    } else if (text === "/newmail" || text === "📧 New Mail") {
       const domain = domains[Math.floor(Math.random() * domains.length)];
       const email = `${randomString(10)}@${domain}`;
       
       session.email = email;
       session.messages = [];
       session.history.unshift(email);
-      session.history = [...new Set(session.history)].slice(0, 20); // ডুপ্লিকেট রিমুভ ও ম্যাক্স ২০
+      session.history = [...new Set(session.history)].slice(0, 20);
       
       await env.KV_SESSIONS.put(chatId.toString(), JSON.stringify(session));
       
-      // ওয়েবসাইট অটো-লগইন লিংক (Base64)
       const encodedEmail = btoa(email);
       const webLink = `${FRONTEND_URL}?email=${encodeURIComponent(encodedEmail)}`;
 
@@ -236,9 +229,7 @@ async function handleRequest(request, env) {
         `✅ <b>Your Temp Email is Ready!</b>\n\n📧 <code>${email}</code>\n\n🌐 <a href="${webLink}">Open Inbox in Web Browser</a>\n<i>👆 Tap the email to copy, or click the link to view on the website!</i>`,
         { parse_mode: "HTML", reply_markup: mainKeyboard(), disable_web_page_preview: true }
       );
-    } 
-    
-    else if (text === "/maillist" || text === "📜 Mail List") {
+    } else if (text === "/maillist" || text === "📜 Mail List") {
       if (!session.history || session.history.length === 0) {
         await sendTelegramMessage(env.BOT_TOKEN, chatId, "❌ No email history found.", { reply_markup: mainKeyboard() });
       } else {
@@ -254,9 +245,7 @@ async function handleRequest(request, env) {
           { parse_mode: "HTML", reply_markup: { inline_keyboard: inlineKeyboard } }
         );
       }
-    } 
-    
-    else if (text === "/myemail" || text === "ℹ️ My Email") {
+    } else if (text === "/myemail" || text === "ℹ️ My Email") {
       if (!session.email) {
         await sendTelegramMessage(env.BOT_TOKEN, chatId, "❌ No active email. Create one first.", { reply_markup: mainKeyboard() });
       } else {
@@ -269,9 +258,7 @@ async function handleRequest(request, env) {
           { parse_mode: "HTML", reply_markup: mainKeyboard(), disable_web_page_preview: true }
         );
       }
-    } 
-    
-    else if (text === "/inbox" || text === "📥 Inbox") {
+    } else if (text === "/inbox" || text === "📥 Inbox") {
       if (!session.email) {
         await sendTelegramMessage(env.BOT_TOKEN, chatId, "❌ No active email. Create one first.", { reply_markup: mainKeyboard() });
       } else {
@@ -304,9 +291,7 @@ async function handleRequest(request, env) {
           await sendTelegramMessage(env.BOT_TOKEN, chatId, "❌ Error checking inbox.", { reply_markup: mainKeyboard() });
         }
       }
-    } 
-    
-    else if (text === "/delete" || text === "🗑 Delete") {
+    } else if (text === "/delete" || text === "🗑 Delete") {
       if (!session.email) {
         await sendTelegramMessage(env.BOT_TOKEN, chatId, "❌ No active email to delete.", { reply_markup: mainKeyboard() });
       } else {
@@ -326,10 +311,7 @@ async function handleRequest(request, env) {
           { parse_mode: "HTML", reply_markup: mainKeyboard() }
         );
       }
-    } 
-    
-    // মেইল পড়ার সেকশন (OTP Tap to Copy)
-    else if (/^\d+$/.test(text)) {
+    } else if (/^\d+$/.test(text)) {
       const index = parseInt(text) - 1;
       if (!session.email) {
         await sendTelegramMessage(env.BOT_TOKEN, chatId, "❌ No active session. Create one first.", { reply_markup: mainKeyboard() });
@@ -349,7 +331,6 @@ async function handleRequest(request, env) {
             else if (full.preview) rawBody = full.preview;
             else rawBody = "(Empty message)";
 
-            // OTP Detection & Formatting
             const otp = detectOtp(`${full.subject || ""}\n${rawBody}`);
             const otpLine = otp ? `\n🔐 <b>OTP Detected:</b> <code>${escapeHtml(otp)}</code> <i>(Tap to copy)</i>\n` : "";
             const safeSubject = escapeHtml(full.subject || "(No subject)");
@@ -370,7 +351,6 @@ async function handleRequest(request, env) {
       await sendTelegramMessage(env.BOT_TOKEN, chatId, "💡 Use the buttons below.", { reply_markup: mainKeyboard() });
     }
   } catch (err) {
-    // Error silently handled to keep worker running
   }
 
   return new Response("OK", { status: 200 });
