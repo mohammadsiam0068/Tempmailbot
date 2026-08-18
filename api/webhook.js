@@ -1,10 +1,14 @@
 const TELEGRAM_API_URL = "https://api.telegram.org/bot";
 
+// একাধিক চ্যানেলের লিস্ট (Force Sub)
 const REQUIRED_CHATS = [
   { id: "@premiumify19", url: "https://t.me/premiumify19" },
   { id: "@premiumify20", url: "https://t.me/premiumify20" }
 ];
+
 const FRONTEND_URL = "https://echomail.eu.cc/";
+
+// আপনার অ্যাডমিন আইডি
 const ADMIN_IDS = ["7880714253"];
 
 function randomString(len = 10) {
@@ -115,6 +119,7 @@ async function handleRequest(request, env) {
       return new Response("OK", { status: 200 });
     }
 
+    // মাল্টিপল ফোর্স সাব চেক (Multiple Force Sub Check)
     let unjoinedChats = [];
     for (const chat of REQUIRED_CHATS) {
       const isMember = await checkMembership(env.BOT_TOKEN, userId, chat.id);
