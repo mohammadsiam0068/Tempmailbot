@@ -95,7 +95,25 @@ async function handleRequest(request, env) {
   }
 
   try {
-    const update = await request.json();
+    const bodyText = await request.text();
+    const update = JSON.parse(bodyText);
+
+    // ==========================================
+    // AUTO DETECT / PUSH NOTIFICATION RECEIVER
+    // ==========================================
+    if (update.new_email_alert && update.email) {
+      const targetChatId = await env.KV_SESSIONS.get("map_" + update.email);
+      if (targetChatId) {
+        const safeFrom = escapeHtml(update.from_address || "Unknown");
+        const safeSubject = escapeHtml(update.subject || "(No subject)");
+        const alertMsg = `🔔 <b>New Email Arrived!</b>\n\n📧 <b>To:</b> <code>${update.email}</code>\n📩 <b>From:</b> <code>${safeFrom}</code>\n📌 <b>Subject:</b> ${safeSubject}\n\n<i>👉 Click 📥 Inbox to read the message.</i>`;
+        
+        await sendTelegramMessage(env.BOT_TOKEN, targetChatId, alertMsg, { parse_mode: "HTML", reply_markup: mainKeyboard() });
+      }
+      return new Response("OK", { status: 200 });
+    }
+    // ==========================================
+
     let chatId, userId, text, firstName;
     let isCallback = false;
     let callbackData = "";
@@ -138,9 +156,7 @@ async function handleRequest(request, env) {
         `⚠️ <b>দুঃখিত, বটটি ব্যবহার করতে হলে আপনাকে নিচের চ্যানেলগুলোতে জয়েন করতে হবে!</b>\n\nজয়েন করার পর আবার /start দিন।`,
         {
           parse_mode: "HTML",
-          reply_markup: {
-            inline_keyboard: inlineKeyboard,
-          },
+          reply_markup: { inline_keyboard: inlineKeyboard }
         }
       );
       return new Response("OK", { status: 200 });
@@ -218,6 +234,8 @@ async function handleRequest(request, env) {
       session.history.unshift(email);
       session.history = [...new Set(session.history)].slice(0, 20);
       
+      // সেশনের সাথে সাথে ইমেইলটি কার, তা ডাটাবেসে সেভ রাখা হলো অটো ডিটেক্টের জন্য
+      await env.KV_SESSIONS.put("map_" + email, chatId.toString());
       await env.KV_SESSIONS.put(chatId.toString(), JSON.stringify(session));
       
       const encodedEmail = btoa(email);
@@ -299,6 +317,7 @@ async function handleRequest(request, env) {
           await fetch(`${apiBase}/api/messages?email=${encodeURIComponent(session.email)}`, { method: "DELETE" });
         } catch (err) {}
         
+        await env.KV_SESSIONS.delete("map_" + session.email); // ম্যাপ ডিলিট
         session.history = session.history.filter(e => e !== session.email);
         session.email = session.history.length > 0 ? session.history[0] : null;
         session.messages = [];
@@ -351,6 +370,7 @@ async function handleRequest(request, env) {
       await sendTelegramMessage(env.BOT_TOKEN, chatId, "💡 Use the buttons below.", { reply_markup: mainKeyboard() });
     }
   } catch (err) {
+    // Error silently handled
   }
 
   return new Response("OK", { status: 200 });
